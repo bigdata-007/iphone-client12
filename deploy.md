@@ -66,8 +66,8 @@ Actions → **Build IPA** → Run workflow。
 - `dist/client.ipa`（同内容副本）
 - `dist/latest.json`（仅自动改 version / size / ipaUrl）
 
-默认 **UNSIGNED + 原生 DT=12（Xcode 16）+ LOWER_MINOS 兜底**，适合 AltStore / SideStore / TrollStore。  
-**注意**：本机 Xcode 27 只改 minos 的包在 iOS 14 上会秒闪退；请用本仓 Actions 产物测旧机。CDN 上传仍本机 `ios-client12/upload-qiniu.sh`。
+默认 **UNSIGNED + 原生 DT=12（Xcode 16）+ LOWER_MINOS 兜底**；artifact / Release **只含一个** `IPADump_*.ipa`（`ONLY_IPA=1`，无 `client.ipa` / `latest.json`）。  
+**注意**：本机 Xcode 27 只改 minos 的包在 iOS 14 上会秒闪退；请用本仓 Actions 产物测旧机。CDN 上传仍本机 `ios-client12/upload-qiniu.sh`（会生成 client.ipa + latest.json）。
 
 ## 本地解密试跑
 

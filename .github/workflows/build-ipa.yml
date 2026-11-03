@@ -222,6 +222,7 @@ jobs:
         env:
           LOWER_MINOS: "1"
           MINOS_VER: "12.0"
+          ONLY_IPA: "1"
         run: |
           set -euo pipefail
           # 侧载默认无签名；手动 workflow 可选 unsigned=false（需 runner 有有效开发者证书）
@@ -232,7 +233,7 @@ jobs:
           export UNSIGNED
           DEV="$(xcode-select -p)"
           export PATH="$DEV/usr/bin:$DEV/Toolchains/XcodeDefault.xctoolchain/usr/bin:$PATH"
-          echo "UNSIGNED=$UNSIGNED LOWER_MINOS=$LOWER_MINOS MINOS_VER=$MINOS_VER"
+          echo "UNSIGNED=$UNSIGNED LOWER_MINOS=$LOWER_MINOS MINOS_VER=$MINOS_VER ONLY_IPA=$ONLY_IPA"
           echo "==> project.yml DT"
           grep -E 'deploymentTarget|IPHONEOS_DEPLOYMENT_TARGET|iOS:|MARKETING_VERSION' project.yml | head -20 || true
           echo "==> which tools"
@@ -241,14 +242,15 @@ jobs:
           chmod +x scripts/build-release-ipa.sh build-release-ipa.sh 2>/dev/null || true
           ./scripts/build-release-ipa.sh
           ls -lh dist/
+          # 断言只有一个 ipa
+          n="$(find dist -maxdepth 1 -name '*.ipa' | wc -l | tr -d ' ')"
+          test "$n" = "1" || { echo "expected 1 ipa, got $n" >&2; ls -la dist >&2; exit 1; }
 
       - name: Upload IPA artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ios-client12-ipa
-          path: |
-            workspace/dist/*.ipa
-            workspace/dist/latest.json
+          path: workspace/dist/*.ipa
           if-no-files-found: error
           retention-days: 14
 
@@ -297,13 +299,9 @@ jobs:
           tag_name: ${{ steps.tag.outputs.tag }}
           name: ${{ steps.tag.outputs.tag }}
           body: |
-            ios-client12 Release IPA（UNSIGNED，侧载自签）。
-
-            - `client.ipa` / `IPADump_*.ipa`
-            - `latest.json`（CDN 上传前请按需改 notes / forceUpdate / nagUpdate）
+            ios-client12 Release IPA（UNSIGNED，侧载自签）。产物仅一个 `IPADump_*.ipa`。
           files: |
             dist/*.ipa
-            dist/latest.json
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
