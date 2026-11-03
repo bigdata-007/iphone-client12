@@ -49,7 +49,7 @@ Actions → **Build IPA** → Run workflow。
 | 输入 | 说明 |
 |------|------|
 | **Release tag** | 如 `v0.0.1`：构建后自动建 GitHub Release；留空只留 artifact（14 天） |
-| **native_ios12** | `auto`（默认）：仅当 runner 是 Xcode 15/16 才改 DT=12；新 Xcode（≥26）保持 DT=15，靠 `LOWER_MINOS` |
+| **native_ios12** | `true`（默认）：用 **Xcode 16** 把 DT 改成 12.0（iOS 14 真机需要；勿只靠 LOWER_MINOS） |
 | **unsigned** | `true`（默认）：`UNSIGNED=1` 无签名包，给侧载工具自签 |
 
 ### 推送 tag 自动发布
@@ -66,7 +66,8 @@ Actions → **Build IPA** → Run workflow。
 - `dist/client.ipa`（同内容副本）
 - `dist/latest.json`（仅自动改 version / size / ipaUrl）
 
-默认 **UNSIGNED + LOWER_MINOS=12.0**，适合 AltStore / SideStore / TrollStore 等侧载。上传七牛 CDN 仍在本机用 `ios-client12/upload-qiniu.sh`（或从 Release 下载后再传）。
+默认 **UNSIGNED + 原生 DT=12（Xcode 16）+ LOWER_MINOS 兜底**，适合 AltStore / SideStore / TrollStore。  
+**注意**：本机 Xcode 27 只改 minos 的包在 iOS 14 上会秒闪退；请用本仓 Actions 产物测旧机。CDN 上传仍本机 `ios-client12/upload-qiniu.sh`。
 
 ## 本地解密试跑
 
@@ -91,8 +92,13 @@ UNSIGNED=1 ./scripts/build-release-ipa.sh
 
 若仓库 **Settings → Actions → General → Workflow permissions** 设为「Read repository contents and packages permissions only」，以上 job 级权限声明仍会生效。
 
-## Runner / Xcode
+## Runner / Xcode（旧机能跑的关键）
 
-- `macos-14`：优先选用已安装的 Xcode 15.x / 16.x；若 runner 只有 Xcode 26/27，**不要**强改 DT=12（会报 `supported deployment target versions is 15.0 to …`，xcodebuild exit 65）
-- `native_ios12=auto`（默认）：有旧 Xcode 才改 DT=12；否则保持工程 DT=15
-- **始终** `LOWER_MINOS=1`（`vtool` + `MinimumOSVersion=12.0`），侧载装旧机靠这个，不依赖原生 DT
+| 方案 | 说明 |
+|------|------|
+| **推荐：本仓 CI** | `macos-15` + **强制 Xcode 16.x** + `native_ios12=true` → 真正按 DT=12 编译 |
+| 本机 Xcode 27 + `LOWER_MINOS` | 只能骗过**安装**；**iOS 14 启动常秒闪退**（Swift/ABI 按 15+） |
+| `macos-14` | 已于 2026-11-02 退役，勿再用 |
+| `macos-26` / `macos-latest` | 基本只有 Xcode 26+，不适合打旧机包 |
+
+若 GitHub 某天去掉 Xcode 16：只能改 **self-hosted Mac**（自装 Xcode 16）或第三方 Mac CI（Codemagic / MacStadium 等）。

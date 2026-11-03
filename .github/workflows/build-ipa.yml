@@ -8,14 +8,14 @@ on:
         required: false
         default: ""
       native_ios12:
-        description: 仅当 runner Xcode 支持时才把 DT 改为 12.0（默认 false；侧载靠 LOWER_MINOS）
+        description: 用 Xcode 16 把工程 DT 改为 12.0（默认 true；14.x 真机需要这个，勿只靠 LOWER_MINOS）
         required: false
-        default: "false"
+        default: "true"
         type: choice
         options:
-          - "false"
-          - "auto"
           - "true"
+          - "auto"
+          - "false"
       unsigned:
         description: 不签名（侧载自签；默认 true）
         required: false
@@ -40,7 +40,8 @@ permissions:
 jobs:
   build:
     name: ios-client12 IPA
-    runs-on: macos-14
+    # macos-14 已退役；macos-15 仍带 Xcode 16.x（可原生 DT=12）。勿用 macos-26/latest（只有 26+，旧机秒闪退）。
+    runs-on: macos-15
     timeout-minutes: 60
 
     steps:
@@ -61,7 +62,7 @@ jobs:
         with:
           passphrase: ${{ secrets.SOURCE_GPG_PASSPHRASE }}
 
-      - name: Select Xcode (prefer ≤16 if present)
+      - name: Select Xcode 16.x (required for native DT=12)
         id: xcode
         shell: bash
         run: |
@@ -69,7 +70,7 @@ jobs:
           echo "==> available Xcodes"
           ls /Applications | grep -i Xcode || true
 
-          # 优先选仍允许较低 DT 的 Xcode；若 runner 只剩 26/27，则保持 DT=15 + LOWER_MINOS
+          # 只选 16.x / 15.x；禁止落到 Xcode.app→26/27（编出来的包在 iOS14 会闪退）
           pick=""
           for c in \
             "/Applications/Xcode_16.4.app" \
@@ -77,12 +78,12 @@ jobs:
             "/Applications/Xcode_16.2.app" \
             "/Applications/Xcode_16.1.app" \
             "/Applications/Xcode_16.0.app" \
+            "/Applications/Xcode_16.app" \
             "/Applications/Xcode_15.4.app" \
             "/Applications/Xcode_15.3.app" \
             "/Applications/Xcode_15.2.app" \
             "/Applications/Xcode_15.1.app" \
-            "/Applications/Xcode_15.0.app" \
-            "/Applications/Xcode.app"
+            "/Applications/Xcode_15.0.app"
           do
             if [ -d "$c" ]; then
               pick="$c"
@@ -90,7 +91,9 @@ jobs:
             fi
           done
           if [ -z "$pick" ]; then
-            echo "ERROR: no Xcode.app found" >&2
+            echo "ERROR: macos-15 上未找到 Xcode 15/16（需要原生 DT=12）。" >&2
+            echo "可用列表：" >&2
+            ls /Applications | grep -i Xcode >&2 || true
             exit 1
           fi
           echo "selecting $pick"
@@ -99,15 +102,14 @@ jobs:
           sudo xcodebuild -license accept 2>/dev/null || true
           sudo xcodebuild -runFirstLaunch 2>/dev/null || true
 
-          # Xcode 15/16 一般仍接受 iOS 12 DT；26/27 只认 ≥15（与本机失败信息一致）
-          MIN_OK=0
           XVER="$(xcodebuild -version 2>/dev/null | awk '/Xcode/{print $2; exit}')"
-          if [[ "$XVER" =~ ^(1[0-5]|16)\. ]]; then
-            MIN_OK=1
+          if [[ ! "$XVER" =~ ^(1[0-5]|16)\. ]]; then
+            echo "ERROR: selected Xcode $XVER is too new for iOS12/14 runtime" >&2
+            exit 1
           fi
           echo "xcode_path=$pick" >> "$GITHUB_OUTPUT"
-          echo "supports_ios12_dt=$MIN_OK" >> "$GITHUB_OUTPUT"
-          echo "Xcode $XVER supports_ios12_dt=$MIN_OK (1=可原生 DT12；0=保持工程 DT15 + LOWER_MINOS)"
+          echo "supports_ios12_dt=1" >> "$GITHUB_OUTPUT"
+          echo "Xcode $XVER supports_ios12_dt=1（将原生 DT=12 编译，供 iOS 12～14 真机）"
 
       - name: Install xcodegen
         shell: bash
@@ -173,8 +175,8 @@ jobs:
           SUPPORTS12: ${{ steps.xcode.outputs.supports_ios12_dt }}
         run: |
           set -euo pipefail
-          # push 事件默认 false（只靠 LOWER_MINOS）；手动可选 auto/true
-          WANT="false"
+          # push / 默认：true（Xcode 16 原生 DT=12）。false 仅调试用（旧机仍会闪退）。
+          WANT="true"
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             WANT="${{ inputs.native_ios12 }}"
           fi
@@ -186,12 +188,13 @@ jobs:
           fi
           if [ "$DO_PATCH" != "1" ]; then
             echo "keep project.yml DT=15（native_ios12=$WANT supports12=${SUPPORTS12:-0}）"
-            echo "侧载 iOS12 仍靠 LOWER_MINOS=1（vtool + MinimumOSVersion）"
+            echo "::warning::未原生 DT=12；LOWER_MINOS 只能骗过安装，iOS14 真机仍可能秒闪退"
             grep -E 'deploymentTarget|IPHONEOS_DEPLOYMENT_TARGET|iOS:' project.yml | head -20 || true
             exit 0
           fi
-          if [ "${SUPPORTS12:-0}" != "1" ] && [ "$WANT" = "true" ]; then
-            echo "WARN: 强制 native_ios12=true 但当前 Xcode 多半不支持 DT=12，构建可能失败" >&2
+          if [ "${SUPPORTS12:-0}" != "1" ]; then
+            echo "ERROR: native_ios12 需要 Xcode 15/16，当前 runner 不支持" >&2
+            exit 1
           fi
           python3 <<'PY'
           import pathlib, re
