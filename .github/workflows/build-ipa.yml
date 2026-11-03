@@ -8,14 +8,14 @@ on:
         required: false
         default: ""
       native_ios12:
-        description: 仅当 runner Xcode 支持时才把 DT 改为 12.0（默认 auto；新 Xcode 会保持 15 + LOWER_MINOS）
+        description: 仅当 runner Xcode 支持时才把 DT 改为 12.0（默认 false；侧载靠 LOWER_MINOS）
         required: false
-        default: "auto"
+        default: "false"
         type: choice
         options:
+          - "false"
           - "auto"
           - "true"
-          - "false"
       unsigned:
         description: 不签名（侧载自签；默认 true）
         required: false
@@ -173,7 +173,8 @@ jobs:
           SUPPORTS12: ${{ steps.xcode.outputs.supports_ios12_dt }}
         run: |
           set -euo pipefail
-          WANT="auto"
+          # push 事件默认 false（只靠 LOWER_MINOS）；手动可选 auto/true
+          WANT="false"
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             WANT="${{ inputs.native_ios12 }}"
           fi
@@ -226,7 +227,14 @@ jobs:
             UNSIGNED=0
           fi
           export UNSIGNED
+          DEV="$(xcode-select -p)"
+          export PATH="$DEV/usr/bin:$DEV/Toolchains/XcodeDefault.xctoolchain/usr/bin:$PATH"
           echo "UNSIGNED=$UNSIGNED LOWER_MINOS=$LOWER_MINOS MINOS_VER=$MINOS_VER"
+          echo "==> project.yml DT"
+          grep -E 'deploymentTarget|IPHONEOS_DEPLOYMENT_TARGET|iOS:|MARKETING_VERSION' project.yml | head -20 || true
+          echo "==> which tools"
+          command -v xcodegen; command -v xcodebuild; command -v vtool; command -v codesign; command -v zip
+          xcodebuild -version
           chmod +x scripts/build-release-ipa.sh build-release-ipa.sh 2>/dev/null || true
           ./scripts/build-release-ipa.sh
           ls -lh dist/
@@ -240,6 +248,17 @@ jobs:
             workspace/dist/latest.json
           if-no-files-found: error
           retention-days: 14
+
+      - name: Upload xcodebuild log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: |
+            workspace/.derived-release/xcodebuild.log
+            workspace/project.yml
+          if-no-files-found: warn
+          retention-days: 7
 
   release:
     name: GitHub Release
