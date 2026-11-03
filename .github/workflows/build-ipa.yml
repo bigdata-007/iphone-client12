@@ -25,6 +25,8 @@ on:
           - "true"
           - "false"
   push:
+    branches:
+      - main
     tags:
       - "v*"
     paths:
