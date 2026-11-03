@@ -8,11 +8,12 @@ on:
         required: false
         default: ""
       native_ios12:
-        description: 将工程 DT 改为 12.0（需旧版 Xcode；默认 true）
+        description: 仅当 runner Xcode 支持时才把 DT 改为 12.0（默认 auto；新 Xcode 会保持 15 + LOWER_MINOS）
         required: false
-        default: "true"
+        default: "auto"
         type: choice
         options:
+          - "auto"
           - "true"
           - "false"
       unsigned:
@@ -42,7 +43,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Require decrypt secret
         shell: bash
@@ -58,15 +59,15 @@ jobs:
         with:
           passphrase: ${{ secrets.SOURCE_GPG_PASSPHRASE }}
 
-      - name: Select Xcode (prefer ≤16 for DT=12)
+      - name: Select Xcode (prefer ≤16 if present)
+        id: xcode
         shell: bash
         run: |
           set -euo pipefail
           echo "==> available Xcodes"
           ls /Applications | grep -i Xcode || true
-          xcodebuild -version || true
 
-          # 优先选仍允许较低 deployment target 的 Xcode（避开本机同类的 26/27）
+          # 优先选仍允许较低 DT 的 Xcode；若 runner 只剩 26/27，则保持 DT=15 + LOWER_MINOS
           pick=""
           for c in \
             "/Applications/Xcode_16.4.app" \
@@ -93,9 +94,18 @@ jobs:
           echo "selecting $pick"
           sudo xcode-select -s "$pick/Contents/Developer"
           xcodebuild -version
-          # 接受许可（幂等）
           sudo xcodebuild -license accept 2>/dev/null || true
           sudo xcodebuild -runFirstLaunch 2>/dev/null || true
+
+          # Xcode 15/16 一般仍接受 iOS 12 DT；26/27 只认 ≥15（与本机失败信息一致）
+          MIN_OK=0
+          XVER="$(xcodebuild -version 2>/dev/null | awk '/Xcode/{print $2; exit}')"
+          if [[ "$XVER" =~ ^(1[0-5]|16)\. ]]; then
+            MIN_OK=1
+          fi
+          echo "xcode_path=$pick" >> "$GITHUB_OUTPUT"
+          echo "supports_ios12_dt=$MIN_OK" >> "$GITHUB_OUTPUT"
+          echo "Xcode $XVER supports_ios12_dt=$MIN_OK (1=可原生 DT12；0=保持工程 DT15 + LOWER_MINOS)"
 
       - name: Install xcodegen
         shell: bash
@@ -157,15 +167,28 @@ jobs:
       - name: Optionally set native IPHONEOS_DEPLOYMENT_TARGET=12.0
         shell: bash
         working-directory: workspace
+        env:
+          SUPPORTS12: ${{ steps.xcode.outputs.supports_ios12_dt }}
         run: |
           set -euo pipefail
-          WANT="true"
+          WANT="auto"
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             WANT="${{ inputs.native_ios12 }}"
           fi
-          if [ "$WANT" != "true" ]; then
-            echo "native_ios12=false — keep project.yml DT"
+          DO_PATCH=0
+          if [ "$WANT" = "true" ]; then
+            DO_PATCH=1
+          elif [ "$WANT" = "auto" ] && [ "${SUPPORTS12:-0}" = "1" ]; then
+            DO_PATCH=1
+          fi
+          if [ "$DO_PATCH" != "1" ]; then
+            echo "keep project.yml DT=15（native_ios12=$WANT supports12=${SUPPORTS12:-0}）"
+            echo "侧载 iOS12 仍靠 LOWER_MINOS=1（vtool + MinimumOSVersion）"
+            grep -E 'deploymentTarget|IPHONEOS_DEPLOYMENT_TARGET|iOS:' project.yml | head -20 || true
             exit 0
+          fi
+          if [ "${SUPPORTS12:-0}" != "1" ] && [ "$WANT" = "true" ]; then
+            echo "WARN: 强制 native_ios12=true 但当前 Xcode 多半不支持 DT=12，构建可能失败" >&2
           fi
           python3 <<'PY'
           import pathlib, re

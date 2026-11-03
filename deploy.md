@@ -49,7 +49,7 @@ Actions → **Build IPA** → Run workflow。
 | 输入 | 说明 |
 |------|------|
 | **Release tag** | 如 `v0.0.1`：构建后自动建 GitHub Release；留空只留 artifact（14 天） |
-| **native_ios12** | `true`（默认）：把 `project.yml` 的 DT 改成 `12.0`（需 runner 上旧版 Xcode） |
+| **native_ios12** | `auto`（默认）：仅当 runner 是 Xcode 15/16 才改 DT=12；新 Xcode（≥26）保持 DT=15，靠 `LOWER_MINOS` |
 | **unsigned** | `true`（默认）：`UNSIGNED=1` 无签名包，给侧载工具自签 |
 
 ### 推送 tag 自动发布
@@ -93,6 +93,6 @@ UNSIGNED=1 ./scripts/build-release-ipa.sh
 
 ## Runner / Xcode
 
-- `macos-14`：优先选用已安装的 Xcode 15.x / 16.x（避开强制 DT≥15 的极新 Xcode）
-- `native_ios12=true` 时脚本会把 `IPHONEOS_DEPLOYMENT_TARGET` / `deploymentTarget.iOS` 改成 `12.0`
-- 仍默认跑 `LOWER_MINOS=1`（`vtool` + plist）作兜底
+- `macos-14`：优先选用已安装的 Xcode 15.x / 16.x；若 runner 只有 Xcode 26/27，**不要**强改 DT=12（会报 `supported deployment target versions is 15.0 to …`，xcodebuild exit 65）
+- `native_ios12=auto`（默认）：有旧 Xcode 才改 DT=12；否则保持工程 DT=15
+- **始终** `LOWER_MINOS=1`（`vtool` + `MinimumOSVersion=12.0`），侧载装旧机靠这个，不依赖原生 DT
