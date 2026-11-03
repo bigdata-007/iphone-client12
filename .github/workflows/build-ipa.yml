@@ -1,0 +1,262 @@
+name: Build IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag（如 v0.0.1）；留空则只上传 artifact、不建 GitHub Release
+        required: false
+        default: ""
+      native_ios12:
+        description: 将工程 DT 改为 12.0（需旧版 Xcode；默认 true）
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      unsigned:
+        description: 不签名（侧载自签；默认 true）
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+  push:
+    tags:
+      - "v*"
+    paths:
+      - "source.zip.gpg"
+      - ".github/workflows/build-ipa.yml"
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  build:
+    name: ios-client12 IPA
+    runs-on: macos-14
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Require decrypt secret
+        shell: bash
+        run: |
+          if [ -z "${{ secrets.SOURCE_GPG_PASSPHRASE }}" ]; then
+            echo "Missing secret SOURCE_GPG_PASSPHRASE" >&2
+            echo "Settings → Secrets and variables → Actions → New repository secret" >&2
+            exit 1
+          fi
+
+      - name: Decrypt and extract source
+        uses: ./.github/actions/decrypt-source
+        with:
+          passphrase: ${{ secrets.SOURCE_GPG_PASSPHRASE }}
+
+      - name: Select Xcode (prefer ≤16 for DT=12)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "==> available Xcodes"
+          ls /Applications | grep -i Xcode || true
+          xcodebuild -version || true
+
+          # 优先选仍允许较低 deployment target 的 Xcode（避开本机同类的 26/27）
+          pick=""
+          for c in \
+            "/Applications/Xcode_16.4.app" \
+            "/Applications/Xcode_16.3.app" \
+            "/Applications/Xcode_16.2.app" \
+            "/Applications/Xcode_16.1.app" \
+            "/Applications/Xcode_16.0.app" \
+            "/Applications/Xcode_15.4.app" \
+            "/Applications/Xcode_15.3.app" \
+            "/Applications/Xcode_15.2.app" \
+            "/Applications/Xcode_15.1.app" \
+            "/Applications/Xcode_15.0.app" \
+            "/Applications/Xcode.app"
+          do
+            if [ -d "$c" ]; then
+              pick="$c"
+              break
+            fi
+          done
+          if [ -z "$pick" ]; then
+            echo "ERROR: no Xcode.app found" >&2
+            exit 1
+          fi
+          echo "selecting $pick"
+          sudo xcode-select -s "$pick/Contents/Developer"
+          xcodebuild -version
+          # 接受许可（幂等）
+          sudo xcodebuild -license accept 2>/dev/null || true
+          sudo xcodebuild -runFirstLaunch 2>/dev/null || true
+
+      - name: Install xcodegen
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          xcodegen --version
+
+      - name: Sync MARKETING_VERSION from release tag
+        shell: bash
+        working-directory: workspace
+        run: |
+          set -euo pipefail
+          TAG=""
+          if [ "${{ github.event_name }}" = "push" ] && [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.release_tag }}" ]; then
+            TAG="${{ inputs.release_tag }}"
+          fi
+          if [ -z "$TAG" ]; then
+            echo "no release tag — keep project.yml version"
+            grep -E 'MARKETING_VERSION|CURRENT_PROJECT_VERSION' project.yml || true
+            exit 0
+          fi
+          VER="${TAG#v}"
+          if [[ ! "$VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-].*)?$ ]]; then
+            echo "ERROR: tag '$TAG' -> version '$VER' looks invalid" >&2
+            exit 1
+          fi
+          export VER
+          python3 <<'PY'
+          import os, pathlib, re
+          ver = os.environ["VER"]
+          p = pathlib.Path("project.yml")
+          text = p.read_text(encoding="utf-8")
+          text2, n1 = re.subn(
+              r'(MARKETING_VERSION:\s*")[^"]+(")',
+              rf'\g<1>{ver}\2',
+              text,
+              count=1,
+          )
+          # build 号：用 patch 段数字，至少 1
+          parts = re.split(r"[.-]", ver)
+          build = parts[2] if len(parts) >= 3 and parts[2].isdigit() else "1"
+          if not build.isdigit():
+              build = "1"
+          text2, n2 = re.subn(
+              r'(CURRENT_PROJECT_VERSION:\s*")[^"]+(")',
+              rf'\g<1>{build}\2',
+              text2,
+              count=1,
+          )
+          p.write_text(text2, encoding="utf-8")
+          print(f"version → {ver} (MARKETING n={n1}, BUILD={build} n={n2})")
+          PY
+
+      - name: Optionally set native IPHONEOS_DEPLOYMENT_TARGET=12.0
+        shell: bash
+        working-directory: workspace
+        run: |
+          set -euo pipefail
+          WANT="true"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            WANT="${{ inputs.native_ios12 }}"
+          fi
+          if [ "$WANT" != "true" ]; then
+            echo "native_ios12=false — keep project.yml DT"
+            exit 0
+          fi
+          python3 <<'PY'
+          import pathlib, re
+          p = pathlib.Path("project.yml")
+          text = p.read_text(encoding="utf-8")
+          text2 = re.sub(
+              r'(IPHONEOS_DEPLOYMENT_TARGET:\s*")[^"]+(")',
+              r'\g<1>12.0\2',
+              text,
+          )
+          text2 = re.sub(
+              r'(iOS:\s*")[^"]+(")',
+              r'\g<1>12.0\2',
+              text2,
+              count=1,
+          )
+          p.write_text(text2, encoding="utf-8")
+          print("patched deploymentTarget / IPHONEOS_DEPLOYMENT_TARGET → 12.0")
+          PY
+          grep -E 'deploymentTarget|IPHONEOS_DEPLOYMENT_TARGET|iOS:' project.yml | head -20
+
+      - name: Build Release IPA
+        shell: bash
+        working-directory: workspace
+        env:
+          LOWER_MINOS: "1"
+          MINOS_VER: "12.0"
+        run: |
+          set -euo pipefail
+          # 侧载默认无签名；手动 workflow 可选 unsigned=false（需 runner 有有效开发者证书）
+          UNSIGNED=1
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.unsigned }}" = "false" ]; then
+            UNSIGNED=0
+          fi
+          export UNSIGNED
+          echo "UNSIGNED=$UNSIGNED LOWER_MINOS=$LOWER_MINOS MINOS_VER=$MINOS_VER"
+          chmod +x scripts/build-release-ipa.sh build-release-ipa.sh 2>/dev/null || true
+          ./scripts/build-release-ipa.sh
+          ls -lh dist/
+
+      - name: Upload IPA artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-client12-ipa
+          path: |
+            workspace/dist/*.ipa
+            workspace/dist/latest.json
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: GitHub Release
+    needs: build
+    if: |
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
+      (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Resolve tag
+        id: tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ inputs.release_tag }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download IPA artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ios-client12-ipa
+          path: dist
+
+      - name: Create / update Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.tag }}
+          body: |
+            ios-client12 Release IPA（UNSIGNED，侧载自签）。
+
+            - `client.ipa` / `IPADump_*.ipa`
+            - `latest.json`（CDN 上传前请按需改 notes / forceUpdate / nagUpdate）
+          files: |
+            dist/*.ipa
+            dist/latest.json
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
